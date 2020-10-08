@@ -1,0 +1,14 @@
+CREATE TRIGGER `Location` AFTER UPDATE ON `location`
+ FOR EACH ROW BEGIN
+IF (NEW.Time>ADDTIME(OLD.Time,"20")) THEN 
+INSERT INTO log_location(TimeStamp,Delay,ID,Longitude,Latitude,Pair) values (NEW.Time,TIMEDIFF(NEW.Time,OLD.Time),NEW.ID,NEW.Longitude,NEW.Latitude,2); 
+ELSE
+ 
+IF ( 1<(SELECT Pair FROM log_location WHERE No=(SELECT MAX(No) FROM log_location))) THEN
+     INSERT INTO log_location(TimeStamp,Delay,ID,Longitude,Latitude,Pair) values (NEW.Time,TIMEDIFF(NEW.Time,OLD.Time),NEW.ID,NEW.Longitude,NEW.Latitude,1); 
+    ELSE
+  UPDATE log_location SET TimeStamp=NEW.Time,Delay=TIMEDIFF(NEW.Time,OLD.Time),ID=NEW.ID,Longitude=NEW.Longitude,Latitude=NEW.Latitude WHERE No =(SELECT MAX(No) FROM log_location);
+   
+    END IF;
+END IF;
+END

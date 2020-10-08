@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Track Me &mdash; Traking System</title>
+	<link rel="stylesheet" type="text/css" href="css/b.css">
+	<link rel="stylesheet" type="text/css" href="css/my-login.css">
+       <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" >
+
+<style type="text/css">
+.logo{
+
+       padding: 0.01em 14px;
+          font-family: fontawesome;
+    text-decoration: none;
+    line-height: 1;
+
+    font-size: 36px;
+    letter-spacing: 3px;
+    color: #555555;
+    display: block;
+
+    top: 14px;
+
+
+}
+   .logo .green{
+
+        color: #4CAF50;
+    }
+.sub-logo{
+    width: 100%;
+    font-size: 10px;
+    text-align: center;
+    float: right!important;
+    letter-spacing: 4px;
+    display: block;
+    }
+</style>
+</head>
+<body class="my-login-page">
+	<section class="h-100 " >
+		<div class="container" style="display: flex;justify-content: space-around; ">
+			<div class="row justify-content-md-center h-100">
+
+				<div class="card-wrapper" style="width: 95%;">
+
+
+					<div class="card fat" style="margin-top: 35px;border-color: greenyellow;box-shadow: 0 0 20px 1px #A8A8A8">
+                                  <a class="logo mt-4 text-center">
+                          <img src="Image\Main icon.png" width="50" height="50" style="border: 0" alt="">Track  <span class="green">Me</span></a>
+
+  <div class="sub-logo mb-4" style="font-family:'Segoe UI',Arial,sans-serif;margin-bottom: 0.1rem!important;">Realtime Tracking System</div>
+
+
+						<div class="card-body">
+
+							<h4 class="card-title">Login</h4>
+							<form >
+
+								<div class="form-group">
+									<label for="UserID">User ID</label>
+
+									<input id="UserID" type="text" class="form-control" name="UserID" value="" required autofocus>
+								</div>
+
+								<div class="form-group">
+									<label for="password">Password
+										<a href="forgot.html" class="float-right">
+											Forgot Password?
+										</a>
+									</label>
+									<input id="password" type="password" class="form-control" name="password" required data-eye>
+								</div>
+
+								<div class="form-group">
+									<label>
+										<input type="checkbox" name="remember"> Remember Me
+									</label>
+								</div>
+
+								<div class="form-group no-margin">
+									<button id="reg" type="submit" class="btn btn-primary btn-block">
+										Login
+									</button>
+								</div>
+								<div class="margin-top20 text-center">
+									Don't have an account? <a href="register.html">Register Now</a>
+								</div>
+							</form>
+						</div>
+					</div>
+					<div class="footer">
+						Copyright &copy 2019 by Lasitha. All rights reserved.
+					</div>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<script src="js/jq.js"></script>
+	<script src="js/b.js"></script>
+	<script src="js/my-login.js"></script>
+
+
+    <script>
+     $(function() {
+
+    /*  "return validation()" */
+
+
+  $('form').on('submit', function (e) {
+
+          e.preventDefault();
+
+
+
+   $.ajax({
+
+  dataType: 'json',
+    cache: false,
+  type:'POST',
+  beforeSend: function(){
+    loading(true);
+  },
+
+  url:'Verify_Login.php',
+  data:  $('form').serialize(),
+
+   success:function(data){
+
+    /*alert(data);*/
+     console.log(data);
+
+ if(data.errno){
+
+
+      alert("Sorry ! Database Connection Error ! .");
+
+
+  }else if(data.isvalid=="valid"){
+
+     console.log(data.url);
+  window.location.href =  data.url;
+    /* window.location.href = "Manage Slot.php";*/
+
+
+  }else{
+      alert("Your User ID or Password is invalid");
+  }
+
+
+  } , error: function(xhr,stat , error){
+       alert("An error occured: " + xhr.status + " " + error);
+
+
+    }
+
+
+
+  ,
+
+  complete: function(){
+
+    loading(false);
+  }
+});
+
+
+});
+
+});
+
+
+ function loading(b){
+
+   if (b==true){
+    $("#reg").prop('disabled', true);
+    $('.form-control').prop('disabled', true);
+ $("#reg").html("<i class='fa fa-circle-o-notch fa-spin'></i>Checking Data..");
+
+ /* setTimeout(function() {
+
+    $("#reg").prop('disabled', false);
+    $('.form-control').prop('disabled', false);
+ $("#reg").html("Register");
+    }, 15000);*/
+   }else{
+    $("#reg").prop('disabled', false);
+    $('.form-control').prop('disabled', false);
+    $("#reg").html("Login");
+   }
+ }
+
+
+    </script>
+</body>
+</html>
