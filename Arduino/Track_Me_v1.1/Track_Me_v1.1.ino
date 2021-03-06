@@ -1,4 +1,3 @@
-
 #include <ArduinoJson.h>
 #include <SoftwareSerial.h>
 #include <MemoryFree.h>
@@ -6,11 +5,19 @@
 //#include <TimerOne.h>
 // bool ledState=false;
 
-// use 2ms debounce time
-#define DEBOUNCE_TICKS 500
+
+// Set the settings before uploading
+#define DEFAULTROUTE 1 //This initialize default route for the device
+#define DEVICEID 1 //This initialize ID for the device
+static const String URL =  "http://sltctrackme.000webhostapp.com"; //This initialize URL of Web Application
+const int Rate = 3000; //The frequency of http requests (mili seconds)
+#define DEBOUNCE_TICKS 500 // Route switch debounce time(ms)
+const long maxResponseTime = 5000; // Maximum response waiting time before restarting the device
+const int maxerrcount = 5; //Maximum error count before restarting the device
+
 
 //extern volatile unsigned long timer0_overflow_count;
-volatile unsigned long keytick =0;  // record time of keypress
+volatile unsigned long keytick = 0; // record time of keypress
 
 SoftwareSerial SIM800(A2, A1); // configure software serial port tx,rx
 SoftwareSerial GPS(3, 7);// configure software serial port tx,rx
@@ -19,11 +26,8 @@ NMEAGPS gps;
 gps_fix fix;
 
 String totalResponse = "";
-const long maxResponseTime = 5000;
 unsigned long last;
 unsigned long lastReq;
-const int Rate = 3000; //The frequency of http requests (mili seconds)
-const int maxerrcount = 5;
 int errcount = 0;
 volatile int Route;
 
@@ -50,29 +54,29 @@ void setup() {
   digitalWrite(Bzz, LOW);
   pinMode(GSMReset, OUTPUT);
   pinMode(Bzz, OUTPUT);
-  
-    
-if (digitalRead(R2)){
-Route = 1; 
- digitalWrite(R3,LOW);
-  digitalWrite(R4,LOW);
-  
-  
-}else if(digitalRead(R3)){
-  
-  Route = 2;
-  digitalWrite(R2,LOW);
-  digitalWrite(R4,LOW);
-}else if(digitalRead(R4)){
-   Route = 3;
-   digitalWrite(R3,LOW);
-  digitalWrite(R2,LOW);
-}else{
- Route=3;                       //this is only point to change route
-   digitalWrite(R4,HIGH);
-  digitalWrite(R2,LOW);
-  digitalWrite(R3,LOW);
-}
+
+
+  if (digitalRead(R2)) {
+    Route = 1;
+    digitalWrite(R3, LOW);
+    digitalWrite(R4, LOW);
+
+
+  } else if (digitalRead(R3)) {
+
+    Route = 2;
+    digitalWrite(R2, LOW);
+    digitalWrite(R4, LOW);
+  } else if (digitalRead(R4)) {
+    Route = 3;
+    digitalWrite(R3, LOW);
+    digitalWrite(R2, LOW);
+  } else {
+    Route = DEFAULTROUTE;                     //this is only point to change route
+    digitalWrite(R4, HIGH);
+    digitalWrite(R2, LOW);
+    digitalWrite(R3, LOW);
+  }
 
   pinMode(R2, OUTPUT);
   pinMode(R3, OUTPUT);
@@ -80,8 +84,8 @@ Route = 1;
 
   digitalWrite(ReqLed, LOW);
   pinMode(ReqLed, OUTPUT);
-pinMode(RutSw,INPUT_PULLUP);
-attachInterrupt(digitalPinToInterrupt(RutSw),SetRoute,LOW);
+  pinMode(RutSw, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(RutSw), SetRoute, LOW);
 
 
 
@@ -130,60 +134,60 @@ void (*resetFunc)(void) = 0;
 void Reset( ) {
   Serial.println(F("*********************Resetted*******************"));
   delay(1000);
- /*digitalWrite(GSMReset, HIGH);
-  digitalWrite(Bzz, LOW);
-digitalWrite(ReqLed, LOW);
- delay(300);
-  digitalWrite(GSMReset, LOW);
-  errcount = 0;
-  last = 0;
-  lastReq = 0;*/
+  /*digitalWrite(GSMReset, HIGH);
+    digitalWrite(Bzz, LOW);
+    digitalWrite(ReqLed, LOW);
+    delay(300);
+    digitalWrite(GSMReset, LOW);
+    errcount = 0;
+    last = 0;
+    lastReq = 0;*/
   resetFunc();
 }
 
 
-void SetRoute(){
- 
-   if (millis() - DEBOUNCE_TICKS>keytick) {
- Serial.println(F("In set Route"));
-switch (Route){
-  case 1:
-      digitalWrite(R3,HIGH);
-      digitalWrite(R2,LOW);
-      digitalWrite(R4,LOW);
-      Route=2;
-   break;
-  case 2:
-      digitalWrite(R4,HIGH);
-      digitalWrite(R2,LOW);
-      digitalWrite(R3,LOW);
-      Route=3;
-   break;
-   case 3:
-      digitalWrite(R2,HIGH);
-      digitalWrite(R3,LOW);
-      digitalWrite(R4,LOW);
-      Route=1;
-   break;
-   
- }
+void SetRoute() {
 
-      
-      Serial.println(Route);
-      keytick=millis();
-   }
-   
- 
- 
- 
- 
- 
- /*digitalWrite(R3,HIGH);
- delay(1000);
-  digitalWrite(R3,LOW);*/
+  if (millis() - DEBOUNCE_TICKS > keytick) {
+    Serial.println(F("In set Route"));
+    switch (Route) {
+      case 1:
+        digitalWrite(R3, HIGH);
+        digitalWrite(R2, LOW);
+        digitalWrite(R4, LOW);
+        Route = 2;
+        break;
+      case 2:
+        digitalWrite(R4, HIGH);
+        digitalWrite(R2, LOW);
+        digitalWrite(R3, LOW);
+        Route = 3;
+        break;
+      case 3:
+        digitalWrite(R2, HIGH);
+        digitalWrite(R3, LOW);
+        digitalWrite(R4, LOW);
+        Route = 1;
+        break;
+
+    }
+
+
+    Serial.println(Route);
+    keytick = millis();
+  }
+
+
+
+
+
+
+  /*digitalWrite(R3,HIGH);
+    delay(1000);
+    digitalWrite(R3,LOW);*/
 }
 void loop() {
- 
+
   if (millis() - last > Rate) {
 
     Serial.print(F("2 begin Free momory :::::::::: "));
@@ -255,7 +259,7 @@ void loop() {
 
 
 
-  // Serial.print(F("2 Free momory :::::::::::: "));
+  // Serial.print(F("2 Free memory :::::::::::: "));
   //Serial.println(freeMemory());
 }
 
@@ -599,7 +603,7 @@ a:
 
 
     if (e >= maxerrcount + 2 ) {
-      e=0;
+      e = 0;
       Reset( );
 
     }
@@ -709,7 +713,7 @@ a:
 
 
     if (ERR >= maxerrcount) {
-      ERR=0;
+      ERR = 0;
       Reset( );
 
     }
@@ -735,13 +739,13 @@ a:
     Serial.print(F("HTTPTERM Fail -> "));
     Serial.println(totalResponse);
 
- if (err >= maxerrcount) {
-      err=0;
+    if (err >= maxerrcount) {
+      err = 0;
       Reset() ;
 
     }
     err++;
-    if (errcount >= maxerrcount-2) {
+    if (errcount >= maxerrcount - 2) {
       CheckGPRS() ;
 
     }
@@ -774,7 +778,7 @@ a:
     Serial.println(totalResponse);
 
     if (err >= maxerrcount) {
-      err=0;
+      err = 0;
       Reset() ;
 
     }
@@ -910,7 +914,7 @@ void SendData(String lat, String lon, String Speed ) {
 
 a:
 
-  SIM800.println("AT+HTTPPARA=\"URL\", \"http://sltctrackme.000webhostapp.com/Upload.php?id=3&lat=" + lat + "&lon=" + lon + "&route=" + Route + "&speed=" + Speed + "\"");
+  SIM800.println("AT+HTTPPARA=\"URL\", \"" + URL + "/Upload.php?id=" + DEVICEID + "&lat=" + lat + "&lon=" + lon + "&route=" + Route + "&speed=" + Speed + "\"");
 
   //  delay(3000);
 
@@ -919,13 +923,13 @@ a:
     Serial.println(totalResponse);
 
     if (err >= maxerrcount) {
-      err=0;
+      err = 0;
       Reset();
     }
     err++;
 
     if (errcount >= maxerrcount - 3) {
-     // HTTPTerminate();
+      // HTTPTerminate();
       CreateRequest();
     }
     goto a;
@@ -965,7 +969,7 @@ b:
 
 
     if (err1 >= maxerrcount) {
-      err1=0;
+      err1 = 0;
       Reset();
     }
     err1++;
