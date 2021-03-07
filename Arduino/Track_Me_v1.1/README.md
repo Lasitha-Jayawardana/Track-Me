@@ -1,5 +1,6 @@
 # Source Code for Arduino
 
+	This code is designed to send hardware device location information and other information to a web server and get server information to the device.
 
 ## Guid Lines
 
