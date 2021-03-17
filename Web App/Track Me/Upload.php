@@ -22,6 +22,7 @@ $extime = date_sub($date, date_interval_create_from_date_string('60 minutes'));
 
 $extime = date_format($extime, "Y-m-d H:i:s");
 
+$conn = new mysqli($servername, $username, $password, $dbname);
 $sql = "DELETE From request WHERE Time <= '$extime';";
  //echo "delete from expire :";
  $conn->query($sql);
