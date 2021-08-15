@@ -1,69 +1,99 @@
-#include <ArduinoJson.h>
-#include <SoftwareSerial.h>
-#include <MemoryFree.h>
-#include <NMEAGPS.h>
-//#include <TimerOne.h>
-// bool ledState=false;
+#include <NMEAGPS.h>          //parsing the comma seperated values to be more human readable
+#include <stdlib.h>           //the lib is needed for the floatToString() helper function
+#include <NeoSWSerial.h>      //it is used instead of SoftwareSerial
 
 
 // Set the settings before uploading
-#define DEFAULTROUTE 1 //This initialize default route for the device
-#define DEVICEID 1 //This initialize ID for the device
-static const String URL =  "http://sltctrackme.000webhostapp.com"; //This initialize URL of Web Application
-const int Rate = 3000; //The frequency of http requests (mili seconds)
-#define DEBOUNCE_TICKS 500 // Route switch debounce time(ms)
-const long maxResponseTime = 5000; // Maximum response waiting time before restarting the device
-const int maxerrcount = 5; //Maximum error count before restarting the device
+#define DEFAULTROUTE 1                      //This initialize default route for the device
+#define DEVICEID 1                          //This initialize ID for the device
+#define DEBOUNCE_TICKS 500                  // Route switch debounce time(ms)
+
+//for sending data to a remote webserver
+String ipAddress = "sltclasith.000webhostapp.com/Track Me";         //this is the ip address of our server - e.g. "123.123.123.123"
+String APN = "dialogbb";                                            //check your Internet provider's website for the APN e.g. "dialogbb"
+
+//SoftwareSerial variables
+static const int gpsRX = 3, gpsTX = 7;
+static const int simRX = A2, simTX = A1;
+static const uint32_t gpsBaud = 9600;
+static const uint32_t simBaud = 9600;
 
 
-//extern volatile unsigned long timer0_overflow_count;
-volatile unsigned long keytick = 0; // record time of keypress
+//helper variables for waitUntilResponse() function
+String response = "";
+static long maxResponseTime = 5000;
+unsigned long lastTime;
+unsigned long lastReq;
 
-SoftwareSerial SIM800(A2, A1); // configure software serial port tx,rx
-SoftwareSerial GPS(3, 7);// configure software serial port tx,rx
+int refreshRate = 3;                     //The frequency of http requests (seconds)
 
+//variables for a well-scheduled loop - in which the sendData() gets called every 15 secs (refresh rate)
+unsigned long last;
+unsigned long current;
+unsigned long elapsed;
+
+volatile unsigned long keytick = 0;       // record time of keypress
+volatile int Route;                       //current route store in here
+
+//if any error occurs with the gsm module or gps module, the corresponding LED will light up - until they don't get resolved
+int GsmErrPin = 9; //error pin
+int GpsErrPin = 8; //error pin
+
+int maxNumberOfErrors = 5;               //if there is an error in sendLocation() function after the GPRS Connection is setup - and the number of errors exceeds 3 - the system reboots. (with the help of the reboot pin)
+int errorsEncountered = 0;                //number of errors encountered after gprsConnection is set up - if exceeds the max number of errors the system reboots
+
+boolean gprsConnectionSetup = false;
+boolean reboot = false;
+
+
+const int BzzPin = 10;          //Buzzer pin
+const int GSMResetPin = 13;     //GSMReset pin
+const int RutSwPin = 2;         //Route switch pin
+const int  ReqLedPin = 4;       //Request Led pin
+const int R2 = A4;              //Route2 pin
+const int R3 = A5;              //Route3 pin
+const int R4 = 11;              //Route4 pin
+
+
+//SoftwareSerial instances
+NeoSWSerial gpsPort(gpsRX, gpsTX);
+NeoSWSerial Sim800l(simRX, simTX);
+
+//GPS instance
 NMEAGPS gps;
 gps_fix fix;
 
-String totalResponse = "";
-unsigned long last;
-unsigned long lastReq;
-int errcount = 0;
-volatile int Route;
+//a helper function which converts a float to a string with a given precision
+String floatToString(float x, byte precision = 2) {
+  char tmp[50];
+  dtostrf(x, 0, precision, tmp);
+  return String(tmp);
+}
 
-const int GSMErr = 9; //error pin
-const int GPSErr = 8; //error pin
-
-const int Bzz = 10; //Buzzer pin
-const int GSMReset = 13; //GSMReset pin
-const int RutSw = 2; //GSMReset pin
-const int  ReqLed = 4;//Request Led pin
-const int R2 = A4; //Route2 pin
-const int R3 = A5; //Route3 pin
-const int R4 = 11; //Route4 pin
-
+void (*reset)(void) = 0;
 
 void setup() {
   delay(3000);
+
+  //init
   Serial.begin(9600);
-  SIM800.begin(9600);
-  GPS.begin(9600);
+  gpsPort.begin(gpsBaud);
+  Sim800l.begin(simBaud);
 
-  Serial.println(F("Starting........"));
-  digitalWrite(GSMReset, HIGH);
-  digitalWrite(Bzz, LOW);
-  pinMode(GSMReset, OUTPUT);
-  pinMode(Bzz, OUTPUT);
 
+  digitalWrite(GSMResetPin, HIGH);
+  digitalWrite(BzzPin, LOW);
+  pinMode(GSMResetPin, OUTPUT);
+  pinMode(BzzPin, OUTPUT);
+
+  pinMode(GsmErrPin, OUTPUT);
+  pinMode(GpsErrPin, OUTPUT);
 
   if (digitalRead(R2)) {
     Route = 1;
     digitalWrite(R3, LOW);
     digitalWrite(R4, LOW);
-
-
   } else if (digitalRead(R3)) {
-
     Route = 2;
     digitalWrite(R2, LOW);
     digitalWrite(R4, LOW);
@@ -82,72 +112,58 @@ void setup() {
   pinMode(R3, OUTPUT);
   pinMode(R4, OUTPUT);
 
-  digitalWrite(ReqLed, LOW);
-  pinMode(ReqLed, OUTPUT);
-  pinMode(RutSw, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(RutSw), SetRoute, LOW);
-
-
-
-
-  pinMode(GSMErr, OUTPUT);
-  pinMode(GPSErr, OUTPUT);
-
+  digitalWrite(ReqLedPin, LOW);
+  pinMode(ReqLedPin, OUTPUT);
+  pinMode(RutSwPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(RutSwPin), SetRoute, LOW);      // route switch attach as interrupt
   delay(300);
-  digitalWrite(GSMReset, LOW);
-  Serial.print(F("1 Free memory : "));
-  Serial.println(freeMemory());
+  digitalWrite(GSMResetPin, LOW);
 
+  Sim800l.write(27); //Clears buffer for safety
 
-  /*
-    Timer1.initialize(500000);
-    Timer1.detachInterrupt();
-    ledState = false;
-    digitalWrite(7, LOW);*/
+  Serial.println(F("Beginning..."));
+  delay(15000);                         //Waiting for Sim800L to get signal
 
+  Sim800l.listen();                     //The GSM module and GPS module can't communicate with the arduino board at once - so they need to get focus once we need them
+  setupGPRSConnection();                //Enable the internet connection to the SIM card
+  Serial.println(F("Connection is setupted"));
 
-  //digitalWrite(Bzz,HIGH);
-  delay(3000);
-  // digitalWrite(Bzz,LOW);
+  gpsPort.listen();
 
-  SIM800.listen();
+  last = millis();
 
-  //Beep();
-
-  InitGSM();
-
-
-  GPRSConnect();
-
-  CreateRequest();
-
-
-
-
-
-  Serial.print(F("2 Free momory : "));
-  Serial.println(freeMemory());
 }
 
-void (*resetFunc)(void) = 0;
 
-void Reset( ) {
-  Serial.println(F("*********************Resetted*******************"));
-  delay(1000);
-  /*digitalWrite(GSMReset, HIGH);
-    digitalWrite(Bzz, LOW);
-    digitalWrite(ReqLed, LOW);
-    delay(300);
-    digitalWrite(GSMReset, LOW);
-    errcount = 0;
-    last = 0;
-    lastReq = 0;*/
-  resetFunc();
+
+void loop() {
+
+  current = millis();
+  elapsed += current - last;
+  last = current;
+
+  while (gps.available(gpsPort)) {
+    fix = gps.read();
+  }
+  if (elapsed >= (refreshRate * 1000)) {
+    sendData();
+    elapsed -= (refreshRate * 1000);
+  }
+
+  if ((gps.statistics.chars < 10)) {
+    //no gps detected (maybe wiring)
+    Serial.println(F("NO GPS DETECTED OR BEFORE FIRST HTTP REQUEST"));
+    delay(3000);
+  }
+
+  if (reboot) {
+    Serial.println(F("Reseted......"));
+    reset();
+  }
+
 }
-
 
 void SetRoute() {
-
   if (millis() - DEBOUNCE_TICKS > keytick) {
     Serial.println(F("In set Route"));
     switch (Route) {
@@ -169,886 +185,160 @@ void SetRoute() {
         digitalWrite(R4, LOW);
         Route = 1;
         break;
-
     }
-
-
     Serial.println(Route);
     keytick = millis();
   }
-
-
-
-
-
-
-  /*digitalWrite(R3,HIGH);
-    delay(1000);
-    digitalWrite(R3,LOW);*/
 }
-void loop() {
 
-  if (millis() - last > Rate) {
-
-    Serial.print(F("2 begin Free momory :::::::::: "));
-    Serial.println(freeMemory());
-
-
-
-    Serial.println(F("location to be sent"));
-
-    if (fix.valid.location) {
-      errcount = 0;
-      digitalWrite(GPSErr, LOW);
-      String lat =  String(fix.latitude(), 5);
-      String lon = String(fix.longitude(), 5);
-      String Speed = String (fix.speed_kph(), 1);
-      Serial.print(F("location : "));
-      Serial.print(lat);
-      Serial.print(F(" <> "));
-      Serial.print(lon);
-      Serial.print(F(" <> "));
-      Serial.print(F("Speed : "));
-      Serial.println(Speed);
-      SIM800.listen();
-
-
-
-
-      SendData(lat, lon, Speed);
-
-
-
-
-
-
-
-    } else {
-      if (errcount >= maxerrcount + 10) {
-        Reset( );
-
-
-      }
-      errcount++;
-      Serial.println(F("location invalid"));
-      digitalWrite(GPSErr, HIGH);
-    }
-
-
-
-
-    last = millis();
-
+void sendData() {
+  Serial.println(F("Ready to send .."));
+  if (fix.valid.location) {
+    digitalWrite(GpsErrPin, LOW);
+    String lat = floatToString(fix.latitude(), 5);
+    String lon = floatToString(fix.longitude(), 5);
+    String Speed = String (fix.speed_kph(), 1);
+    Serial.print(F("location : "));
+    Serial.print(lat);
+    Serial.print(F(" <> "));
+    Serial.print(lon);
+    Serial.print(F(" <> "));
+    Serial.print(F("Speed : "));
+    Serial.println(Speed);
+    sendLocation(lat, lon, Speed);
   } else {
-
-    GPS.listen();
-
-
-    while (gps.available(GPS)) {
-      fix = gps.read();
-    }
-
-
+    digitalWrite(GpsErrPin, HIGH);
   }
-
-
-
-
-
-
-
-
-
-  // Serial.print(F("2 Free memory :::::::::::: "));
-  //Serial.println(freeMemory());
 }
 
-
-bool CheckResponse( String resp) {
-
-  totalResponse = "";
-  unsigned long lasttime = millis() + maxResponseTime;
-  //Serial.println( String(millis()) + " vs " + String(lasttime));
-
-
-  while (totalResponse.indexOf(resp) < 0 && millis() < lasttime && totalResponse.indexOf("ERROR\r\n") < 0)
-  {
-    delay(100);
-    ReadResponse();
-
-
-  }
-
-  //  Serial.println("11111111==" + String(totalResponse.indexOf(resp)));
-  //Serial.println("2222222==" + String(totalResponse.indexOf("ERROR\r\n")));
-
-
-  if (totalResponse.length() <= 0)
-  {
-    totalResponse = "NO RESPONSE";
-    digitalWrite(GSMErr, HIGH);
-    errcount++;
-
-
-    Serial.print(F("check response Free momory : "));
-    Serial.println(freeMemory());
-
-
-    return false;
-
-  } else if (totalResponse.indexOf(resp) < 0)
-  {
-
-    errcount++;
-
-
-    totalResponse = "UNEXPECTED RESPONSE :  " + totalResponse ;
-    digitalWrite(GSMErr, HIGH);
-
-    Serial.print(F("check response Free momory : "));
-    Serial.println(freeMemory());
-
-
-    return false;
-  } else {
-
-    digitalWrite(GSMErr, LOW);
-    errcount = 0;
-
-    Serial.print(F("check response Free momory : "));
-    Serial.println(freeMemory());
-
-    return true;
-  }
-
-
-
-
+void setupGPRSConnection() {
+  Sim800l.println(F("AT+SAPBR=3,1,\"Contype\",\"GPRS\""));    //Connection type: GPRS
+  waitUntilResponse("OK");
+  Sim800l.println("AT+SAPBR=3,1,\"APN\",\"" + APN + "\"");    //We need to set the APN which our internet provider gives us
+  waitUntilResponse("OK");
+  Sim800l.println(F("AT+SAPBR=1,1"));                         //Enable the GPRS
+  waitUntilResponse("OK");
+  Sim800l.println(F("AT+HTTPINIT"));                          //Enabling HTTP mode
+  waitUntilResponse("OK");
+  gprsConnectionSetup = true;
 }
 
 
 
-void ReadResponse() {
+//the function - which is responsible for sending data to the webserver
+void sendLocation(String lat, String lon, String Speed) {
+  Sim800l.listen();
+  //The line below sets the URL we want to connect to
+  Sim800l.println("AT+HTTPPARA=\"URL\", \"http://" + ipAddress +  "/Upload.php?id=" + DEVICEID + "&lat=" + lat + "&lon=" + lon + "&route=" + Route + "&speed=" + Speed + "\"");
 
+  // Sim800l.println("AT+HTTPPARA=\"URL\", \"http://postman-echo.com/get?foo1=bar1&foo2=bar2\"");         //for testing purposes
 
-  while (SIM800.available()) {
-    delay(10);
+  waitUntilResponse("OK");
 
-    totalResponse += char (SIM800.read()); //makes the string readString
+  //GO
+  Sim800l.println(F("AT+HTTPACTION=0"));
+  waitUntilResponse("200");
+  Serial.println(F("Location sent"));
 
-  }
-  //   Serial.print(F("In reading.... Free momory : "));
-  // Serial.println(freeMemory());
+  Sim800l.println(F("AT+HTTPREAD"));
+  Serial.println(F("Reading response from server #####.."));
 
-}
-
-
-
-
-void InitGSM() {
-  Serial.println(F("GSMSetup Starting.."));
-  SIM800.listen() ;
-
-a:
-
-  SIM800.println(F("AT"));
-  delay(500);
-
-  if (!CheckResponse("OK\r\n")) {
-    Serial.print(F("GSM Module Not Found -> "));
-    Serial.println(totalResponse);
-
-    if (errcount >= maxerrcount) {
-      Reset();
-      return;
-    }
-    delay(500);
-    goto a;
-
-
-  }
-
-  Serial.println(F("GSM Module Connected."));
-
-  totalResponse = "";
-
-  delay( 500);
-  /*b:
-
-    SIM800.println("ATE0");
-    delay(500);
-
-    if (!CheckResponse(maxResponseTime, "OK\r\n")) {
-      Serial.println("EchoIni Fail -> " + totalResponse);
-      delay(1000);
-
-      if (errcount >= maxerrcount - 2) {
-        Reset("gsm setup");
-        return;
-      }
-      goto b;
-    }
-
-      Serial.println("EchoIni Succes ");
-
-
-    totalResponse = "";
-
-    delay(1500);
-
-    c:
-    SIM800.println("AT+CPIN?");
-    delay(500);
-
-    if (!CheckResponse(maxResponseTime, "+CPIN: READY\r\n\r\nOK\r\n" ) ) {
-      Serial.println("Sim NotFound -> "  + totalResponse);
-
-      if (errcount >= maxerrcount - 2) {
-        Reset("gsm setup");
-        return;
-      }
-
-      delay(1000);
-      goto c;
-
-    }
-    Serial.println("Sim Found -> ");
-
-    totalResponse = "";
-
-    delay(1500);
-    d:
-    SIM800.println(F("AT+CIPSHUT"));
-    delay(1000);
-
-    if (!CheckResponse("OK\r\n") ) {
-
-    Serial.print(F("Clear Initial Fail -> "));
-    Serial.println(totalResponse);
-
-
-      if (errcount >= maxerrcount) {
-        Reset( );
-        return;
-      }
-      delay(500);
-      goto d;
-    }
-    Serial.println(F("All Initial Clear."));
-
-
-    totalResponse = "";
-
-  */
-  delay(500);
-e:
-  SIM800.println(F("AT+CFUN=1"));
-  delay(500);
-
-  if (!CheckResponse( "OK\r\n") ) {
-    Serial.print(F("Full Fuctions Activate Fail -> "));
-    Serial.println(totalResponse);
-
-    if (errcount >= maxerrcount - 2) {
-      Reset( );
-      return;
-    }
-    delay(500);
-    goto e;
-  }
-  Serial.println(F("Full Function Activated."));
-
-
-  totalResponse = "";
-
-
-  delay( 500);
-
-  CheckSignal();
-
-  delay( 1000);
-
-g:
-
-  SIM800.println(F("AT+CGATT=1"));
-  delay(1000);
-
-  if (!CheckResponse(  "OK\r\n")) {
-    Serial.print(F("GPRS Attach Fail -> "));
-    Serial.println(totalResponse);
-
-    if (errcount >= maxerrcount) {
-      Reset();
-      return;
-    }
-    delay(1000);
-    goto g;
-
-  }
-  Serial.println(F("GPRS is Attached."));
-
-
-  totalResponse = "";
-
-  Serial.println(F("GSMInit Completed........"));
-
-
-}
-
-
-/*void GPRSBlink(void) {
-  if (ledState == true) {
-    ledState = false;
-   digitalWrite(7, LOW);
-
-  } else {
-    ledState = true;
-     digitalWrite(7, HIGH);
-
-  }
-
-
-  }
-*/
-
-
-
-void GPRSConnect() {
-  Serial.println(F("GPRSConnect Starting......" ) );
-
-a:
-  delay(500);
-  SIM800.println(F("AT+SAPBR=3,1,\"Contype\",\"GPRS\""));
-
-
-  if (!CheckResponse( "OK\r\n")) {
-    Serial.print(F("Set Contype GPRS Fail -> "));
-    Serial.println(totalResponse);
-
-
-    if (errcount >= maxerrcount) {
-      Reset( );
-      return;
-    }
-    delay(500);
-    goto a;
-
-
-  }
-
-  Serial.println(F("Set Contype GPRS Success."));
-
-
-  totalResponse = "";
-
-
-b:
-  delay(500);
-  SIM800.println("AT+SAPBR=3,1,\"APN\",\"CMNET\"");
-
-
-  if (!CheckResponse(  "OK\r\n")) {
-    Serial.print(F("Set APN Fail -> "));
-    Serial.println(totalResponse);
-
-
-    if (errcount >= maxerrcount) {
-      Reset( );
-      return;
-    }
-    delay(500);
-    goto b;
-
-
-  }
-
-  Serial.println(F("Set APN Success."));
-
-
-  totalResponse = "";
-
-
-
-  delay(500);
-  ConGPRS();
-
-
-  delay(500);
-  Serial.println(F("InitGPRS Completed..........."));
-
-
-}
-
-
-
-
-
-void CheckSignal() {
-  int e = 0;
-a:
-  // delay(2000);
-  SIM800.println(F("AT+CSQ"));
-  delay(1000);
-  CheckResponse( "OK\r\n");
-
-  int i = totalResponse.indexOf(",");
-
-
-  if (totalResponse.indexOf("OK\r\n") < 0 || totalResponse.substring(i - 2, i).toInt() < 15 ) {
-
-
-
-    Serial.print(F("Signal Poor -> "  ));
-    Serial.println(totalResponse);
-
-
-    if (e >= maxerrcount + 2 ) {
-      e = 0;
-      Reset( );
-
-    }
-    delay(1000);
-
-    e++;
-    goto a;
-  }
-
-
-  Serial.print(F("Signal strength -> "));
-  Serial.println(totalResponse);
-
-
-  totalResponse = "";
-
-
-}
-
-
-void ConGPRS() {
-
-a:
-  delay(500);
-  SIM800.println(F("AT+SAPBR=1,1"));
-
-  delay(500);
-  if (!CheckResponse( "OK\r\n")) {
-
-    /*Timer1.detachInterrupt();
-      ledState = false;
-      digitalWrite(7, LOW);*/
-
-
-    Serial.print(F("GPRS Can't Connect -> "));
-    Serial.println(totalResponse);
-
-
-    delay(2000);
-
-
-
-    if (errcount >= maxerrcount) {
-      Reset( );
-
-
-    }
-
-    if (!totalResponse.indexOf("ERROR\r\n") < 0) {
-      CheckSignal();
-    }
-
-
-
-    goto a;
-
-  }
-
-  //Timer1.attachInterrupt(GPRSBlink);
-
-  Serial.println(F("GPRS Connected." ));
-
-
-  totalResponse = "";
-}
-
-
-
-
-void CheckGPRS() {
-  int ERR = 0;
-a:
-  delay(500);
-  SIM800.println(F("AT+SAPBR=2,1"));
-
-  delay(1000);
-  if (CheckResponse( "OK\r\n")) {
-
-    Serial.println(totalResponse);
-    if (totalResponse.indexOf("+SAPBR: 1,1") < 0) {
-
-      /*Timer1.detachInterrupt();
-        ledState = false;
-        digitalWrite(7, LOW);*/
-
-      ConGPRS();
-    } else {
-      totalResponse = "";
-
-      //Timer1.attachInterrupt(GPRSBlink);
-
-      Serial.println(F("GPRS Already Connected."));
-      return;
-    }
-
-
-  } else {
-    /*Timer1.detachInterrupt();
-      ledState = false;
-      digitalWrite(7, LOW);*/
-    ERR++;
-    Serial.print (F("Can't CheckGPRS -> " ));
-    Serial.println( totalResponse);
-
-    delay(1000);
-
-
-
-    if (ERR >= maxerrcount) {
-      ERR = 0;
-      Reset( );
-
-    }
-
-    goto a;
-
-  }
-  totalResponse = "";
-
-
-}
-
-
-
-void HTTPTerminate() {
-  int err = 0;
-a:
-
-  SIM800.println(F("AT+HTTPTERM"));
-  delay(1000);
-
-  if (!CheckResponse( "OK\r\n")) {
-    Serial.print(F("HTTPTERM Fail -> "));
-    Serial.println(totalResponse);
-
-    if (err >= maxerrcount) {
-      err = 0;
-      Reset() ;
-
-    }
-    err++;
-    if (errcount >= maxerrcount - 2) {
-      CheckGPRS() ;
-
-    }
-    delay(500);
-    goto a;
-
-
-
-  }
-
-  Serial.println(F("HTTPTERMINATE Success."));
-
-
-  totalResponse = "";
-}
-
-
-void CreateRequest() {
-  SIM800.listen();
-  Serial.println(F("HTTP Request Starting.........."));
-
-  int err = 0;
-a:
-
-  SIM800.println(F("AT+HTTPINIT"));
-  delay(1000);
-
-  if (!CheckResponse( "OK\r\n")) {
-    Serial.print(F("HTTPINIT Fail -> "));
-    Serial.println(totalResponse);
-
-    if (err >= maxerrcount) {
-      err = 0;
-      Reset() ;
-
-    }
-    err++;
-
-    if (errcount >= maxerrcount - 2) {
-      CheckGPRS() ;
-
-    }
-
-
-    delay(500);
-    goto a;
-
-
-
-  }
-
-  Serial.println(F("HTTPINIT Success."));
-
-
-  totalResponse = "";
-  /*
-
-    b:
-    delay(500);
-    SIM800.println(F("AT+HTTPPARA=\"CID\",1"));
-    delay(1000);
-
-    if (!CheckResponse(  "OK\r\n")) {
-     Serial.print(F("HTTPPARA CID Fail -> "));
-    Serial.println(totalResponse);
-
-
-
-
-       if (errcount >= maxerrcount) {
-         CheckGPRS() ;
-        goto a;
-      }
-      goto b;
-
-
-
-    }
-
-     Serial.println(F("HTTPPARA Success."));
-
-    totalResponse = "";
-
-
-    c:
-    delay(500);
-    SIM800.println(F("AT+HTTPPARA=\"URL\",\"sltclasith.000webhostapp.com/receive.php\""));
-
-    delay(1000);
-    if (!CheckResponse( "OK\r\n")) {
-      Serial.print(F("HTTP URL Fail -> "));
-    Serial.println(totalResponse);
-
-
-
-      if (errcount >= maxerrcount) {
-       CheckGPRS();
-        goto a;
-      }
-
-      goto c;
-
-
-
-    }
-
-    Serial.println(F("HTTP URL Success."));
-
-
-    totalResponse = "";
-
-
-    d:
-    delay(500);
-    SIM800.println(F("AT+HTTPPARA=\"CONTENT\",\"application/json\""));
-    delay(500);
-
-    if (!CheckResponse(  "OK\r\n")) {
-    Serial.print(F("HTTP JSON Fail -> "));
-    Serial.println(totalResponse);
-
-
-
-      delay(1000);
-
-      if (errcount >= maxerrcount) {
-        CheckGPRS();
-        goto a;
-      }
-
-      goto d;
-
-
-
-    }
-
-    Serial.println(F("HTTP Json Success."));
-
-
-    totalResponse = "";
-  */
-
-  Serial.print(F("Request Completed :------- "));
-  Serial.println(freeMemory());
-
-  Serial.println(F("HTTP Request Complete......" ));
-}
-
-
-
-
-
-
-
-
-void SendData(String lat, String lon, String Speed ) {
-
-
-  Serial.println(F("Sending Strating..........."));
-
-  Serial.print(F("Sending Starting --------- : "));
-  Serial.println(freeMemory());
-
-  int err = 0;
-  int err1 = 0;
-
-a:
-
-  SIM800.println("AT+HTTPPARA=\"URL\", \"" + URL + "/Upload.php?id=" + DEVICEID + "&lat=" + lat + "&lon=" + lon + "&route=" + Route + "&speed=" + Speed + "\"");
-
-  //  delay(3000);
-
-  if (!CheckResponse( "OK\r\n")) {
-    Serial.print(F("Data Sending Fail -> "));
-    Serial.println(totalResponse);
-
-    if (err >= maxerrcount) {
-      err = 0;
-      Reset();
-    }
-    err++;
-
-    if (errcount >= maxerrcount - 3) {
-      // HTTPTerminate();
-      CreateRequest();
-    }
-    goto a;
-
-
-
-
-
-
-  }
-
-  Serial.println(F("Data Sending..."));
-
-
-  totalResponse = "";
-
-  err = 0;
-
-  //delay(1000);
-
-
-
-
-
-
-b:
-
-  SIM800.println(F("AT+HTTPACTION=0"));
-  //delay(2000);
-
-  if (!CheckResponse( "+HTTPACTION: 0,200")) {
-    Serial.print(F("Data Submit Fail -> "));
-    Serial.println( totalResponse);
-
-
-    delay(2000);
-
-
-    if (err1 >= maxerrcount) {
-      err1 = 0;
-      Reset();
-    }
-    err1++;
-
-
-    if (errcount >= maxerrcount - 3) {
-      HTTPTerminate();
-
-      CreateRequest();
-      goto a;
-
-    }
-
-    goto b;
-
-
-
-
-
-
-  }
-
-  Serial.println(F("Data Submit Success"));
-  totalResponse = "";
-
-  err1 = 0;
-  //delay(500);
-  SIM800.println(F("AT+HTTPREAD"));
-  //delay(2000);
-
-  Serial.println(F("Reading#####.."));
-
-  if (CheckResponse("OK") && totalResponse.indexOf('N') > 0) {
-
+  waitUntilResponse("OK");
+  if (response.indexOf('N') > 0) {       // check whether ON or OFF key arived
     Request(1);
-    // Serial.println("blub on");
-
+    Serial.println(F("Request blub on"));
   } else {
-    //Serial.println("blub off");
+    Serial.println(F("Request blub off"));
     Request(0);
   }
-
-  Serial.println(totalResponse);
-
-
-
+  Serial.println(response);
+  gpsPort.listen();
+}
 
 
-  Serial.print(F("Memory free        ----------: "));
-  Serial.println(freeMemory());
 
-  totalResponse = "";
-
+void Request(int i) {
+  if (i == 1) {
+    lastReq = millis();
+    digitalWrite(ReqLedPin, HIGH);
+    Beep();
+  } else if (millis() - lastReq > 50000 && i == 0) {
+    digitalWrite(ReqLedPin, LOW);
+  }
 }
 
 void Beep() {
   Serial.print(F("in beep......................"));
   for (int i = 0; i < 2; i++) {
-    digitalWrite(Bzz, HIGH);
+    digitalWrite(BzzPin, HIGH);
     delay(200);
-    digitalWrite(Bzz, LOW);
+    digitalWrite(BzzPin, LOW);
     delay(200);
-    digitalWrite(Bzz, HIGH);
+    digitalWrite(BzzPin, HIGH);
     delay(400);
-    digitalWrite(Bzz, LOW);
+    digitalWrite(BzzPin, LOW);
     delay(200);
   }
-
 }
 
-void Request(int i) {
 
+//ERROR handler - exits if error arises or a given time exceeds with no answer - or when everything is OK
+void waitUntilResponse(String resp) {
+  lastTime = millis();
+  response = "";
+  String totalResponse = "";
+  while (response.indexOf(resp) < 0 && millis() - lastTime < maxResponseTime)
+  {
+    readResponse();
+    totalResponse = totalResponse + response;
+    Serial.println(response);
+  }
+  if (totalResponse.length() <= 0)
+  {
+    Serial.println(F("NO RESPONSE"));
+    digitalWrite(GsmErrPin, HIGH);
+    if (gprsConnectionSetup == true) {
+      Serial.println("error");
+      errorsEncountered++;
+    }
+  }
+  else if (response.indexOf(resp) < 0)
+  {
+    if (gprsConnectionSetup == true) {
+      Serial.println("error");
+      errorsEncountered++;
+    }
+    Serial.println(F("UNEXPECTED RESPONSE"));
+    Serial.println(totalResponse);
+    digitalWrite(GsmErrPin, HIGH);
+  } else {
+    Serial.println(F("SUCCESSFUL"));
+    digitalWrite(GsmErrPin, LOW);
+    errorsEncountered = 0;
+  }
 
-  if (i == 1) {
-    lastReq = millis();
-    digitalWrite(ReqLed, HIGH);
-    Beep();
-  } else if (millis() - lastReq > 50000 && i == 0) {
-    digitalWrite(ReqLed, LOW);
+  //if there are more errors or equal than previously set ==> reboot!
+  if (errorsEncountered >= maxNumberOfErrors) {
+    reboot = true;
+  }
+  response = totalResponse;
+}
+
+void readResponse() {
+  response = "";
+  while (response.length() <= 0 || !response.endsWith("\n"))
+  {
+    tryToRead();
+    if (millis() - lastTime > maxResponseTime)
+    {
+      return;
+    }
   }
 }
 
+void tryToRead() {
+  while (Sim800l.available()) {
+    char c = Sim800l.read();          //gets one byte from serial buffer
+    response += c;                    //makes the string readString
+  }
+}

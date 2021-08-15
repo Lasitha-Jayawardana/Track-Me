@@ -10,7 +10,12 @@
 	
 	2. Change following setting in source code before uploading.
 	
-        // Set the settings before uploading
-        #define DEFAULTROUTE 1 //This initialize default route for the device
-        #define DEVICEID 1 //This initialize ID for the device
-        static const String URL =  "http://sltctrackme.000webhostapp.com"; //This initialize URL of Web Application
+		
+		#define DEFAULTROUTE 1                      //This initialize default route for the device
+		#define DEVICEID 1                          //This initialize ID for the device
+		#define DEBOUNCE_TICKS 500                  // Route switch debounce time(ms)
+
+
+		String ipAddress = "sltclasith.000webhostapp.com/Track Me";         //this is the ip address of our server
+		String APN = "dialogbb";    					    // Set the APN in your SIM provider
+        	
